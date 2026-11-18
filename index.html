@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#14110f">
+<title>Guitar Key Companion</title>
+<style>
+/* Palette: warm stage-dark base, amber (lit-fret) accent, teal for secondary shape text */
+:root{--bg:#14110f;--panel:#1e1a17;--line:#3a322b;--text:#f3ece2;--dim:#a99d8e;--amber:#f0a93b;--amber-ink:#1a1206;--teal:#6fc7b6}
+*{box-sizing:border-box;margin:0}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:10px 10px 28px;max-width:560px;margin:0 auto;line-height:1.25}
+h2{font-size:.78rem;font-weight:600;letter-spacing:.08em;color:var(--dim);margin:12px 2px 6px}
+.grid{display:grid;gap:6px}
+.keys{grid-template-columns:repeat(4,1fr)}
+.keys button{min-height:46px;padding:4px 2px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:8px;font:600 .95rem inherit;font-family:inherit;cursor:pointer;touch-action:manipulation}
+.keys button small{display:block;font-size:.68rem;font-weight:500;color:var(--dim)}
+.keys button[aria-pressed=true]{background:var(--amber);color:var(--amber-ink);border-color:var(--amber)}
+.keys button[aria-pressed=true] small{color:var(--amber-ink)}
+button:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+#title{font-size:2.3rem;font-weight:800;letter-spacing:.02em;margin:14px 2px 4px;color:var(--amber)}
+.main{grid-template-columns:1fr 1fr}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.card .deg{font-size:.72rem;color:var(--dim)}
+.card .chord{font-weight:800;line-height:1.05}
+.card .shape{color:var(--teal);font-size:.85rem;margin-top:2px}
+.main .card{border-color:var(--amber)}
+.main .chord{font-size:2.6rem}
+.opt{grid-template-columns:1fr 1fr}
+.opt .card{padding:7px 12px;opacity:.92}
+.opt .chord{font-size:1.5rem;font-weight:700}
+.guide{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.guide .capo{font-size:1.7rem;font-weight:800;color:var(--amber)}
+.guide .fam{font-size:1.05rem;font-weight:700;margin-top:2px}
+.guide p{color:var(--dim);font-size:.9rem;margin-top:4px}
+.guide .warn{color:var(--amber)}
+#shapes{font-size:1.1rem;letter-spacing:.04em;padding:2px}
+#shapes span{color:var(--dim);font-size:.78rem;display:block;letter-spacing:0}
+#reset{float:right;background:none;border:1px solid var(--line);color:var(--dim);border-radius:6px;padding:4px 10px;font:inherit;font-size:.75rem;cursor:pointer}
+</style>
+</head>
+<body>
+
+<h2>SELECT KEY <button id="reset" type="button">Reset to C</button></h2>
+<h2>MAJOR KEYS</h2>
+<div class="grid keys" id="majorKeys"></div>
+<h2>MINOR KEYS</h2>
+<div class="grid keys" id="minorKeys"></div>
+
+<div id="title"></div>
+
+<h2>MAIN CHORDS</h2>
+<div class="grid main" id="main"></div>
+<h2>OPTIONAL CHORDS</h2>
+<div class="grid opt" id="opt"></div>
+
+<h2>PLAYING GUIDE</h2>
+<div class="guide" id="guide"></div>
+
+<h2>SHAPE REFERENCE</h2>
+<div id="shapes"></div>
+
+<script>
+/* ============================================================
+   DATA & THEORY ENGINE  (no chord data is hard-coded per key;
+   everything is calculated from scale intervals)
+   ============================================================ */
+
+// Preferred spelling: sharps (D#, not Eb). Used for all chord names.
+const NOTES  = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+// Button labels: enharmonic keys are ONE button.
+const LABELS = ['C','C# / Db','D','D#','E','F','F# / Gb','G','G# / Ab','A','A# / Bb','B'];
+
+const SCALES = {
+  major: [0,2,4,5,7,9,11],   // I ii iii IV V vi vii°
+  minor: [0,2,3,5,7,8,10]    // natural minor: i ii° III iv v VI VII
+};
+const DEGREES = {
+  major: ['I','ii','iii','IV','V','vi','vii°'],
+  minor: ['i','ii°','III','iv','v','VI','VII']
+};
+// Which scale degrees (0-based) go where. Minor skips ii° (diminished).
+const LAYOUT = {
+  major: { main:[0,3,4,5], opt:[1,2] },   // I IV V vi  |  ii iii
+  minor: { main:[0,3,4,5], opt:[2,6] }    // i iv v VI  |  III VII
+};
+
+// Open-shape families. EDIT HERE to add families (e.g. a D or A family).
+// root = the pitch the family's "I" shape sounds with no capo.
+const FAMILIES = [
+  { name:'C', root:0, shapes:['C','Dm','Em','F','G','Am'] },
+  { name:'G', root:7, shapes:['G','Am','Bm','C','D','Em'] }
+];
+
+// Build a triad (root + quality) from the scale by stacking thirds.
+function triad(scale, i){
+  const r = scale[i];
+  const third = (scale[(i+2)%7] - r + 12) % 12;
+  const fifth = (scale[(i+4)%7] - r + 12) % 12;
+  let q = '?';
+  if(third===4 && fifth===7) q = '';        // major
+  else if(third===3 && fifth===7) q = 'm';  // minor
+  else if(third===3 && fifth===6) q = 'dim';
+  return { root:r, q };
+}
+
+// Find the lowest capo at which every chord becomes a shape in the family.
+function arrange(chords, fam){
+  for(let capo=0; capo<12; capo++){
+    const shapes = chords.map(c => NOTES[(c.root - capo + 12) % 12] + c.q);
+    if(shapes.every(s => fam.shapes.includes(s))) return { fam, capo, shapes };
+  }
+  return null;
+}
+
+// Build everything the UI needs for one key.
+function build(tonic, mode){
+  const scale = SCALES[mode].map(n => (n + tonic) % 12);
+  const tri = scale.map((_, i) => triad(scale, i));
+  const make = i => ({ deg:DEGREES[mode][i], root:tri[i].root, q:tri[i].q, name:NOTES[tri[i].root] + tri[i].q });
+  const main = LAYOUT[mode].main.map(make);
+  const opt  = LAYOUT[mode].opt.map(make);
+  const all  = main.concat(opt);
+
+  // Try each family; prefer lowest capo, ties go to the earlier family (C).
+  const options = FAMILIES.map(f => arrange(all, f)).filter(Boolean);
+  options.sort((a,b) => a.capo - b.capo);
+  const best = options[0];
+  all.forEach((c,i) => c.shape = best.shapes[i]);
+  return { tonic, mode, main, opt, fam:best.fam, capo:best.capo, highCapo:best.capo > 5 };
+}
+
+/* ============================================================
+   SELF-TEST: independent check of every key. Run selfTest() in
+   the browser console. Also runs once on load (console only).
+   ============================================================ */
+function selfTest(){
+  const errors = [];
+  const pc = s => { // sounding pitch class of a shape name
+    const m = s.match(/^([A-G]#?)(m?)$/); return { r:NOTES.indexOf(m[1]), q:m[2] };
+  };
+  for(const mode of ['major','minor']){
+    for(let t=0; t<12; t++){
+      const k = build(t, mode), tag = NOTES[t]+' '+mode;
+      const six = k.main.concat(k.opt);
+      if(six.length!==6) errors.push(tag+': not 6 chords');
+      six.forEach(c => {
+        if(c.q==='?'||c.q==='dim') errors.push(tag+': bad quality '+c.name);
+        const s = pc(c.shape);
+        // shape + capo must equal the sounding chord, same quality
+        if((s.r + k.capo) % 12 !== c.root || s.q !== c.q) errors.push(tag+': '+c.shape+' + capo '+k.capo+' != '+c.name);
+        if(!k.fam.shapes.includes(c.shape)) errors.push(tag+': shape outside family '+c.shape);
+      });
+      // chord roots must be diatonic to the key's scale
+      const scale = SCALES[mode].map(n => (n+t)%12);
+      six.forEach(c => { if(!scale.includes(c.root)) errors.push(tag+': non-diatonic '+c.name); });
+      // all six family shapes must appear (so the reference line is complete)
+      if(new Set(six.map(c=>c.shape)).size!==6) errors.push(tag+': duplicate shapes');
+    }
+  }
+  // spot checks from the brief
+  const d = build(3,'major');
+  const got = d.main.concat(d.opt).map(c => c.name+'>'+c.shape).join(' ');
+  const want = 'D#>C G#>F A#>G Cm>Am Fm>Dm Gm>Em';
+  if(d.fam.name!=='C' || d.capo!==3 || got!==want) errors.push('D# major spot check failed: '+got);
+  if(LABELS.filter(l => /A#/.test(l)).length!==1) errors.push('A#/Bb not single');
+  if(LABELS.some(l => /^Eb|^D#.*Eb/.test(l))) errors.push('Eb present');
+  return { ok:errors.length===0, keysTested:24, errors };
+}
+
+/* ============================================================
+   UI
+   ============================================================ */
+function ordinal(n){ return n + (['TH','ST','ND','RD'][n<4 ? n : 0] || 'TH'); }
+
+(function(){
+  if(typeof document === 'undefined') return;   // allows headless testing
+  const $ = id => document.getElementById(id);
+  let sel = { tonic:0, mode:'major' };
+  try { const s = JSON.parse(localStorage.getItem('gkc')); if(s && s.tonic>=0 && s.tonic<12 && SCALES[s.mode]) sel = s; } catch(e){}
+
+  // Make the 24 buttons
+  ['major','minor'].forEach(mode => {
+    const box = $(mode+'Keys');
+    LABELS.forEach((lab, t) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.t = t; b.dataset.m = mode;
+      b.setAttribute('aria-pressed','false');
+      b.innerHTML = lab.replace(' / ', '<small>') + (lab.includes('/') ? '</small>' : '');
+      b.setAttribute('aria-label', lab + ' ' + mode);
+      box.appendChild(b);
+    });
+  });
+
+  function card(c, main){
+    return '<div class="card"><div class="deg">'+c.deg+'</div><div class="chord">'+c.name+'</div><div class="shape">Shape: '+c.shape+'</div></div>';
+  }
+
+  function render(){
+    const k = build(sel.tonic, sel.mode);
+    document.querySelectorAll('.keys button').forEach(b => {
+      b.setAttribute('aria-pressed', (+b.dataset.t===sel.tonic && b.dataset.m===sel.mode) ? 'true' : 'false');
+    });
+    const keyName = NOTES[k.tonic] + (k.mode==='major' ? ' MAJOR' : ' MINOR');
+    $('title').textContent = keyName;
+    $('main').innerHTML = k.main.map(c => card(c)).join('');
+    $('opt').innerHTML  = k.opt.map(c => card(c)).join('');
+    const capoTxt = k.capo===0 ? 'OPEN / NO CAPO' : ordinal(k.capo) + ' FRET';
+    const instr = k.capo===0
+      ? 'No capo. Play the ' + k.fam.name + '-family chord shapes.'
+      : 'Place capo on the ' + ordinal(k.capo).toLowerCase() + ' fret and play the ' + k.fam.name + '-family chord shapes.';
+    $('guide').innerHTML =
+      '<div class="capo">CAPO: '+capoTxt+'</div>' +
+      '<div class="fam">Shape family: '+k.fam.name+' FAMILY</div>' +
+      '<p>'+instr+'</p>' +
+      (k.highCapo ? '<p class="warn">High capo: neither family is easy here. Treat as a reference, not a guaranteed easiest fingering.</p>' : '');
+    $('shapes').innerHTML = '<span>'+k.fam.name+' FAMILY SHAPES</span>' + k.fam.shapes.join(' · ');
+    document.title = keyName + ' · Guitar Key Companion';
+    try { localStorage.setItem('gkc', JSON.stringify(sel)); } catch(e){}
+  }
+
+  document.querySelectorAll('.keys').forEach(box => box.addEventListener('click', e => {
+    const b = e.target.closest('button'); if(!b) return;
+    sel = { tonic:+b.dataset.t, mode:b.dataset.m };
+    render();
+  }));
+  $('reset').addEventListener('click', () => { sel = { tonic:0, mode:'major' }; render(); });
+
+  render();
+  const r = selfTest();
+  if(!r.ok) console.error('Self-test failed', r.errors); else console.log('Self-test OK: '+r.keysTested+' keys');
+})();
+</script>
+</body>
+</html>
